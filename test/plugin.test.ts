@@ -126,9 +126,9 @@ describe("doom loop plugin (standalone)", () => {
       await Effect.runPromise(h.before(beforeEvent("shell", input, "g_1")))
       expect(h.asserted).toHaveLength(0)
     }
-    await Effect.runPromise(h.before(beforeEvent("shell", input, "g_1")))
-    expect(h.asserted).toHaveLength(1)
-    expect(h.asserted[0]?.resources[0]).toContain(":repeat")
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "g_1"))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
   })
 
   it("challenges the 7th identical output emission of one signature", async () => {
@@ -139,8 +139,9 @@ describe("doom loop plugin (standalone)", () => {
       await emit(h, "grep", input, `a_${i}`, text(out))
     }
     expect(h.asserted).toHaveLength(0)
-    await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "a_7"))))
-    expect(h.asserted).toHaveLength(1)
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "a_7"))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
   })
 
   it("resets B and lets the run continue when the circuit ask is allowed", async () => {
@@ -151,8 +152,8 @@ describe("doom loop plugin (standalone)", () => {
       await emit(h, "shell", input, `al_${i}`, text(out(i)))
     }
     const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "al_14"))))
-    expect(Exit.isSuccess(exit)).toBe(true)
-    expect(h.asserted).toHaveLength(1)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
     expect(h.interrupts()).toBe(0)
   })
 
@@ -163,12 +164,13 @@ describe("doom loop plugin (standalone)", () => {
     for (let i = 1; i <= 13; i++) {
       await emit(h, "shell", input, `dn_${i}`, text(out(i)))
     }
-    h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: doom_loop" })))
-    await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_14"))))
-    expect(h.asserted).toHaveLength(1)
-    await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_15"))))
-    expect(h.asserted).toHaveLength(1)
-    expect(h.interrupts()).toBe(2)
+    const exit1 = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_14"))))
+    expect(Exit.isFailure(exit1)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
+    const exit2 = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_15"))))
+    expect(Exit.isFailure(exit2)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
+    expect(h.interrupts()).toBe(0)
   })
 
   it("returns a host-wrapped CorrectedError as feedback without a sticky stop", async () => {
@@ -186,8 +188,10 @@ describe("doom loop plugin (standalone)", () => {
         }),
       ),
     )
-    await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "ce_14"))))
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "ce_14"))))
+    expect(Exit.isFailure(exit)).toBe(true)
     expect(h.interrupts()).toBe(0)
+    expect(h.asserted).toHaveLength(0)
   })
 
   it("resets A and C on a real user message", async () => {
@@ -220,8 +224,9 @@ describe("doom loop plugin (standalone)", () => {
     const out = "src/a.ts:1:TODO\nsrc/b.ts:2:TODO\nsrc/c.ts:3:TODO"
     const history = Array.from({ length: 6 }, (_, i) => makeHistoryCall(`a_${i}`, "grep", input, out))
     const h = await run({ history })
-    await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "a_7"))))
-    expect(h.asserted).toHaveLength(1)
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "a_7"))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
   })
 
   it("evicts the least recently touched session past the cap and re-folds it from history", async () => {

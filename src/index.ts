@@ -1,7 +1,7 @@
 import { define } from "@opencode/plugin/effect/plugin"
 import type { Session } from "@opencode/schema/session"
 import type { SessionEvent } from "@opencode/schema/session-event"
-import { Effect, Exit, Option, Scope, Stream } from "effect"
+import { Effect, Scope, Stream } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { DoomLoopDetector } from "./detector.js"
 import { DoomLoopFold } from "./fold.js"
@@ -113,71 +113,16 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
             yield* ctx.session.interrupt({ sessionID: event.sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
             return yield* new Tool.Error({ message: verdict.message, metadata: DoomLoopDetector.blockedMetadata })
           }
-          // The breaker goes through doom_loop like every other signal: allow resets B and lets
-          // the run continue; a denial makes the stop sticky and explains why it happened.
-          const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix.b}`
-          const outcome = yield* Effect.exit(
-            ctx.permission.assert({
-              sessionID: event.sessionID,
-              agent: event.agent,
-              action: "doom_loop",
-              resources: [resource],
-              save: [resource],
-              source: { type: "tool", messageID: event.messageID, id: event.id },
-            }),
-          )
-          if (Exit.isSuccess(outcome)) {
-            current.state.bStreak = 0
-            return
-          }
-          const error = Option.getOrUndefined(Exit.findErrorOption(outcome))
-          // A rule-based denial makes the stop sticky; a CorrectedError carries model feedback and
-          // returns as a plain Tool.Error so the model can act on it (no sticky stop, no interrupt).
-          // Only a CorrectedError returns as plain feedback for the model (no sticky stop).
-          // The public API errors are Tool.Error, so identify a correction by its tag (both a bare
-          // error and the host-wrapped `error` field), rather than by class identity.
-          const tagOf = (value: unknown): string | undefined =>
-            typeof value === "object" && value !== null && "_tag" in value
-              ? (value as { _tag: string })._tag
-              : undefined
-          const corrected =
-            tagOf(error) === "Permission.CorrectedError" ||
-            (error instanceof Tool.Error && tagOf(error.error) === "Permission.CorrectedError")
-          if (!corrected) {
-            yield* ctx.storage.set(circuitKey(event.sessionID), true).pipe(Effect.ignore)
-            current.state.circuitBroken = true
-            yield* ctx.session.interrupt({ sessionID: event.sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
-          }
-          return yield* new Tool.Error({
-            message: `${verdict.message}\n\n${error?.message ?? "rejected"}`,
-            metadata: DoomLoopDetector.blockedMetadata,
-          })
+          // The breaker blocks like every other verdict: no permission ask. The stop is sticky in
+          // state (circuitFrozen, restored from durable history by the fold) until a new user
+          // message re-arms it — see fold.ts `userMessage`. No interrupt: a single-blocked call
+          // might still have a narrow escape in this message; the sticky state stops the next ones.
+          return yield* new Tool.Error({ message: verdict.message, metadata: DoomLoopDetector.blockedMetadata })
         }
-        const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix[verdict.signal]}`
-        // host.ts maps BlockedError/CorrectedError to Tool.Error and keeps a plain rejection a
-        // defect; stacking our copy on the mapped message preserves the "why blocked + what next"
-        // guidance for both typed outcomes. Deliberately no inner `error`: toSessionError unwraps
-        // to the innermost error's message when one is attached, which would discard our copy.
-        // The blockedMetadata marker persists on the error part so the fold skips this call — it
-        // never executed, so the live path never accounted it.
-        return yield* ctx.permission
-          .assert({
-            sessionID: event.sessionID,
-            agent: event.agent,
-            action: "doom_loop",
-            resources: [resource],
-            save: [resource],
-            source: { type: "tool", messageID: event.messageID, id: event.id },
-          })
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new Tool.Error({
-                  message: `${verdict.message}\n\n${error.message}`,
-                  metadata: DoomLoopDetector.blockedMetadata,
-                }),
-            ),
-          )
+        // Hard block: the verdict message tells the model why and what to do; the blockedMetadata
+        // marker persists on the error part so the fold skips this call — it never executed, so
+        // the live path never accounted it. The re-arm path is a new user message.
+        return yield* new Tool.Error({ message: verdict.message, metadata: DoomLoopDetector.blockedMetadata })
       }),
     )
 

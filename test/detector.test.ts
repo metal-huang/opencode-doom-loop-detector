@@ -97,7 +97,7 @@ describe("doom loop detector", () => {
       const warns: number[] = []
       for (let i = 1; i <= 8; i++) {
         const before = DoomLoopDetector.beforeCall(state, { tool: "shell", sigHash: sig, messageID: `poll_${i}` })
-        if (before.kind === "assert") asks.push({ call: i, signal: before.signal })
+        if (before.kind === "block") asks.push({ call: i, signal: before.signal })
         if (before.kind === "circuit") asks.push({ call: i, signal: "HARD-CIRCUIT" })
         const warning = DoomLoopDetector.recordCompleted(state, { tool: "shell", sigHash: sig, text: pollOut })
         if (warning !== undefined) warns.push(i)
@@ -123,8 +123,8 @@ describe("doom loop detector", () => {
       const asks: number[] = []
       for (let i = 1; i <= 8; i++) {
         const before = DoomLoopDetector.beforeCall(state, { tool: "grep", sigHash: sig, messageID: `a_${i}` })
-        if (before.kind === "assert") asks.push(i)
-        expect(before.kind === "assert" ? before.signal : before.kind).not.toBe("circuit")
+        if (before.kind === "block") asks.push(i)
+        expect(before.kind === "block" ? before.signal : before.kind).not.toBe("circuit")
         const warning = DoomLoopDetector.recordCompleted(state, { tool: "grep", sigHash: sig, text: output })
         if (warning !== undefined) warns.push(i)
       }
@@ -164,7 +164,7 @@ describe("doom loop detector", () => {
       for (let i = 1; i <= 21; i++) {
         const k = (i - 1) % 3
         const before = DoomLoopDetector.beforeCall(state, { tool: "shell", sigHash: sigs[k]!, messageID: `r_${i}` })
-        if (before.kind === "assert" && firstBlock === 0) {
+        if (before.kind === "block" && firstBlock === 0) {
           firstBlock = i
           firstBlockSignal = before.signal
         }
@@ -239,14 +239,14 @@ describe("doom loop detector", () => {
       // its own block tier (6) so B's slot is reached.
       for (let i = 1; i <= 4; i++) {
         const vx = emitSig(sigX)
-        results.push(vx.kind === "assert" ? `X${i}:${vx.signal}` : `X${i}:${vx.kind}`)
+        results.push(vx.kind === "block" ? `X${i}:${vx.signal}` : `X${i}:${vx.kind}`)
         if (vx.kind === "pass") complete(sigX)
         const vo = emitSig(other(i))
-        results.push(vo.kind === "assert" ? `O${i}:${vo.signal}` : `O${i}:${vo.kind}`)
+        results.push(vo.kind === "block" ? `O${i}:${vo.signal}` : `O${i}:${vo.kind}`)
         if (vo.kind === "pass") complete(other(i))
       }
       const v5 = emitSig(sigX)
-      results.push(v5.kind === "assert" ? `X5:${v5.signal}` : `X5:${v5.kind}`)
+      results.push(v5.kind === "block" ? `X5:${v5.signal}` : `X5:${v5.kind}`)
       expect(results).toEqual([
         "X1:pass",
         "O1:pass",
@@ -275,7 +275,7 @@ describe("doom loop detector", () => {
       const sigHigh = DoomLoopDetector.signature("grep", { pattern: "fresh" })
       high.signatures.set(sigHigh, { lastOutputHash: "h", streak: 3 })
       const vHigh = DoomLoopDetector.beforeCall(high, { tool: "grep", sigHash: sigHigh, messageID: "m" })
-      expect(vHigh).toMatchObject({ kind: "assert", signal: "b" })
+      expect(vHigh).toMatchObject({ kind: "block", signal: "b" })
     })
 
     it("clears the streak on productive calls (novel >= 2 or ratio >= 50%)", () => {
@@ -427,7 +427,7 @@ describe("doom loop detector", () => {
           sigHash: sig,
           messageID: `c_${i}`,
         })
-        if (before.kind === "assert" && blockedAt === 0) {
+        if (before.kind === "block" && blockedAt === 0) {
           blockedAt = i
           blockedSignal = before.signal
         }
@@ -595,8 +595,8 @@ describe("doom loop detector", () => {
       expect(ask("msg_2").kind).toBe("pass")
       expect(ask("msg_2").kind).toBe("pass")
       const third = ask("msg_2")
-      expect(third).toMatchObject({ kind: "assert", signal: "guard" })
-      if (third.kind === "assert") expect(third.message).toContain("emitted 3 times")
+      expect(third).toMatchObject({ kind: "block", signal: "guard" })
+      if (third.kind === "block") expect(third.message).toContain("emitted 3 times")
       // One-shot: the 4th and 5th emissions of the same message do not ask again.
       expect(ask("msg_2").kind).toBe("pass")
       expect(ask("msg_2").kind).toBe("pass")
@@ -614,11 +614,11 @@ describe("doom loop detector", () => {
       expect(emit("m_a").kind).toBe("pass")
       expect(emit("m_a").kind).toBe("pass")
       // And the fresh m_a bucket still asks exactly once at its own 3rd emission.
-      expect(emit("m_a")).toMatchObject({ kind: "assert", signal: "guard" })
+      expect(emit("m_a")).toMatchObject({ kind: "block", signal: "guard" })
       // Switching again drops the m_a bucket, so m_b recounts from 1 as well.
       expect(emit("m_b").kind).toBe("pass")
       expect(emit("m_b").kind).toBe("pass")
-      expect(emit("m_b")).toMatchObject({ kind: "assert", signal: "guard" })
+      expect(emit("m_b")).toMatchObject({ kind: "block", signal: "guard" })
     })
 
     it("merges the A streak into the guard copy when carried across messages", () => {
@@ -633,8 +633,8 @@ describe("doom loop detector", () => {
       DoomLoopDetector.beforeCall(state, { tool: "grep", sigHash: sig, messageID: "new_msg" })
       DoomLoopDetector.recordCompleted(state, { tool: "grep", sigHash: sig, text: "a:1\nb:2\nc:3" })
       const v = DoomLoopDetector.beforeCall(state, { tool: "grep", sigHash: sig, messageID: "new_msg" })
-      expect(v).toMatchObject({ kind: "assert", signal: "guard" })
-      if (v.kind === "assert") expect(v.message).toContain("identical output")
+      expect(v).toMatchObject({ kind: "block", signal: "guard" })
+      if (v.kind === "block") expect(v.message).toContain("identical output")
     })
   })
 
@@ -645,7 +645,7 @@ describe("doom loop detector", () => {
       let askedAt = 0
       for (let i = 1; i <= 12; i++) {
         const before = DoomLoopDetector.beforeCall(state, { tool: "question", sigHash: sig, messageID: `q_${i}` })
-        if (before.kind === "assert" && askedAt === 0) askedAt = i
+        if (before.kind === "block" && askedAt === 0) askedAt = i
         if (before.kind === "pass") DoomLoopDetector.recordUnobserved(state, sig)
       }
       expect(askedAt).toBe(7)
@@ -659,8 +659,8 @@ describe("doom loop detector", () => {
       let unobserved = 0
       for (let i = 1; i <= 8; i++) {
         const before = DoomLoopDetector.beforeCall(state, { tool: "shell", sigHash: sig, messageID: "bg" })
-        if (before.kind === "assert" && before.signal === "guard") guard++
-        if (before.kind === "assert" && before.signal === "unobserved") unobserved++
+        if (before.kind === "block" && before.signal === "guard") guard++
+        if (before.kind === "block" && before.signal === "unobserved") unobserved++
         if (before.kind === "pass") DoomLoopDetector.recordUnobserved(state, sig)
       }
       // The guard asks once at the 3rd emission; the high-tier prompt fires once at the 7th.

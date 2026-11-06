@@ -114,7 +114,7 @@ export const copy = {
   warnC: (tool: string, streak: number): string =>
     `The ${tool} tool has failed ${streak} times in a row with the same error. Stop retrying it unchanged. Inspect the target or ask the user before trying again.`,
   blockA: (tool: string, streak: number): string =>
-    `This exact ${tool} call has returned identical output ${streak} times in a row and is blocked as a suspected repetition loop. If this repetition is intentional (for example user-requested polling), approve the doom_loop permission to continue.`,
+    `This exact ${tool} call has returned identical output ${streak} times in a row and is blocked as a suspected repetition loop. It was not executed. If the repetition is intentional (for example user-requested polling), tell the user; the guard only re-arms on a new user message.`,
   blockB: `Recent calls keep producing nothing new, and this exact call has already returned identical output repeatedly. It is blocked as suspected non-progress. Run a falsification check, ask the user for missing input, or conclude with the evidence at hand.`,
   blockC: (tool: string, streak: number): string =>
     `The ${tool} tool has failed ${streak} times in a row with the same error and is blocked as a suspected retry loop. Inspect the target state or ask the user before trying again.`,
@@ -158,7 +158,7 @@ export type Verdict =
   | { readonly kind: "pass" }
   | { readonly kind: "circuit"; readonly message: string; readonly sticky: boolean }
   | {
-      readonly kind: "assert"
+      readonly kind: "block"
       readonly signal: keyof typeof resourceSuffix
       readonly message: string
     }
@@ -222,23 +222,23 @@ export function beforeCall(current: SessionState, call: Call): Verdict {
       entry !== undefined && entry.streak >= A_WARN
         ? copy.guardMerged(emitted, call.tool, entry.streak)
         : copy.guard(emitted, call.tool)
-    return { kind: "assert", signal: "guard", message }
+    return { kind: "block", signal: "guard", message }
   }
   const unobserved = current.unobserved.get(call.sigHash) ?? 0
   if (unobserved >= UNOBSERVED_PROMPT && !current.highTierPrompted) {
     current.highTierPrompted = true
-    return { kind: "assert", signal: "unobserved", message: copy.unobserved }
+    return { kind: "block", signal: "unobserved", message: copy.unobserved }
   }
   const entry = current.signatures.get(call.sigHash)
   if (entry !== undefined && entry.streak >= A_BLOCK) {
-    return { kind: "assert", signal: "a", message: copy.blockA(call.tool, entry.streak) }
+    return { kind: "block", signal: "a", message: copy.blockA(call.tool, entry.streak) }
   }
   if (current.bStreak >= B_BLOCK && entry !== undefined && entry.streak >= A_WARN) {
-    return { kind: "assert", signal: "b", message: copy.blockB }
+    return { kind: "block", signal: "b", message: copy.blockB }
   }
   const failure = current.failures.get(call.sigHash)
   if (failure !== undefined && failure.streak >= C_BLOCK) {
-    return { kind: "assert", signal: "c", message: copy.blockC(call.tool, failure.streak) }
+    return { kind: "block", signal: "c", message: copy.blockC(call.tool, failure.streak) }
   }
   return { kind: "pass" }
 }
