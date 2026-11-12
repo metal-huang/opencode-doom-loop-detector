@@ -117,14 +117,23 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
         })
         if (verdict.kind === "pass") return
         if (verdict.kind === "circuit") {
+          const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix.circuit}`
+          const fields = {
+            sessionID: event.sessionID,
+            tool: event.tool,
+            signal: "circuit" as const,
+            sigHash,
+            resource,
+          }
           // A sticky circuit (a previous denial) stops without re-asking, until the user speaks.
           if (verdict.sticky) {
+            yield* Effect.logWarning("sticky doom loop circuit blocked the call", fields)
             yield* ctx.session.interrupt({ sessionID: event.sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
             return yield* new Tool.Error({ message: verdict.message, metadata: DoomLoopDetector.blockedMetadata })
           }
           // The breaker goes through doom_loop like every other signal: allow resets B and lets
           // the run continue; a denial makes the stop sticky and explains why it happened.
-          const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix.circuit}`
+          yield* Effect.logInfo("doom loop permission requested", fields)
           const outcome = yield* Effect.exit(
             ctx.permission.assert({
               sessionID: event.sessionID,
@@ -136,9 +145,16 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
             }),
           )
           if (Exit.isSuccess(outcome)) {
+            yield* Effect.logInfo("doom loop permission allowed", fields)
             current.state.bStreak = 0
             return
           }
+          // A defect carries no typed error either, so log the full cause rather than only the
+          // last typed error. Logging observes the outcome and must not change downstream handling.
+          yield* Effect.logWarning("doom loop permission not granted", {
+            ...fields,
+            cause: Cause.pretty(outcome.cause),
+          })
           const error = Option.getOrUndefined(Exit.findErrorOption(outcome))
           // A rule-based denial makes the stop sticky; a CorrectedError carries model feedback and
           // returns as a plain Tool.Error so the model can act on it (no sticky stop, no interrupt).
@@ -163,6 +179,14 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
           })
         }
         const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix[verdict.signal]}`
+        const fields = {
+          sessionID: event.sessionID,
+          tool: event.tool,
+          signal: verdict.signal,
+          sigHash,
+          resource,
+        }
+        yield* Effect.logInfo("doom loop permission requested", fields)
         // host.ts maps BlockedError/CorrectedError to Tool.Error and keeps a plain rejection a
         // defect; stacking our copy on the mapped message preserves the "why blocked + what next"
         // guidance for both typed outcomes. Deliberately no inner `error`: toSessionError unwraps
@@ -185,6 +209,16 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
                   message: `${verdict.message}\n\n${error.message}`,
                   metadata: DoomLoopDetector.blockedMetadata,
                 }),
+            ),
+            // Observe the final Exit so a plain rejection defect is logged too. onExit passes the
+            // original success/failure through; logging cannot swallow or rewrite it.
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.logInfo("doom loop permission allowed", fields)
+                : Effect.logWarning("doom loop permission not granted", {
+                    ...fields,
+                    cause: Cause.pretty(exit.cause),
+                  }),
             ),
           )
       }),

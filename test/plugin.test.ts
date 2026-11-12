@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { Effect, Exit, Option, Queue, Scope, Stream } from "effect"
+import { Effect, Exit, Logger, Option, Queue, Scope, Stream } from "effect"
 import { makePlugin } from "../src/index.js"
 import { DoomLoopDetector } from "../src/detector.js"
 import { Tool } from "@opencode/schema/tool"
@@ -10,6 +10,11 @@ type BeforeHook = (input: { tool: string; input: unknown; sessionID: string; mes
 type AfterHook = (input: { tool: string; input: unknown; sessionID: string; status: string; result?: { content: unknown; output?: unknown; metadata?: Record<string, unknown> }; error?: Tool.Error }) => Effect.Effect<void>
 type Outcome = () => Effect.Effect<void, Tool.Error>
 
+interface CapturedLog {
+  readonly level: string
+  readonly message: ReadonlyArray<unknown>
+}
+
 interface Harness {
   readonly before: BeforeHook
   readonly after: AfterHook
@@ -17,9 +22,22 @@ interface Harness {
   readonly interrupts: () => number
   readonly setOutcome: (outcome: Outcome) => void
   readonly publish: (event: SessionEvent.Info) => Effect.Effect<void, Error>
+  readonly logs: ReadonlyArray<CapturedLog>
 }
 
 const sessionID = "ses_doom_loop"
+
+// Local Effect logger: captures structured log arguments without touching the global console and
+// without changing the hook's Exit.
+function makeLogCapture() {
+  const logs: CapturedLog[] = []
+  const logger = Logger.make(({ logLevel, message }) => {
+    logs.push({ level: logLevel, message: Array.isArray(message) ? message : [message] })
+  })
+  const observe = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.provide(Effect.withLogger(effect, logger), Logger.layer([]))
+  return { logs, observe }
+}
 
 function makeHistoryCall(id: string, tool: string, input: unknown, out: string): SessionMessage.Info {
   return {
@@ -51,6 +69,7 @@ async function run(options?: {
   const queue = Effect.runSync(Queue.unbounded<SessionEvent.Info>())
   const storage = options?.storage ?? new Map<string, unknown>()
   const scope = Effect.runSync(Scope.make())
+  const capture = makeLogCapture()
 
   const ctx = {
     tool: {
@@ -96,14 +115,15 @@ async function run(options?: {
   )
 
   return {
-    before: (input) => beforeHook!(input),
-    after: (input) => afterHook!(input),
+    before: (input) => capture.observe(beforeHook!(input)),
+    after: (input) => capture.observe(afterHook!(input)),
     asserted,
     interrupts: () => interrupts,
     setOutcome: (next) => {
       outcome = next
     },
     publish: (event) => Effect.as(Queue.offer(queue, event), undefined),
+    logs: capture.logs,
   }
 }
 
@@ -167,6 +187,12 @@ describe("doom loop plugin (standalone)", () => {
     // The breaker owns its saved resource: allowing B must not exempt the same signature's circuit.
     const sig = DoomLoopDetector.signature("shell", input)
     expect(h.asserted[0]?.resources).toEqual([`shell:${sig}:circuit`])
+    const requested = h.logs.find((log) => log.message[0] === "doom loop permission requested")
+    expect(requested?.level).toBe("Info")
+    expect(requested?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit" })
+    const allowed = h.logs.find((log) => log.message[0] === "doom loop permission allowed")
+    expect(allowed?.level).toBe("Info")
+    expect(allowed?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit", resource: `shell:${sig}:circuit` })
     expect(h.interrupts()).toBe(0)
   })
 
@@ -180,8 +206,14 @@ describe("doom loop plugin (standalone)", () => {
     h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: doom_loop" })))
     await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_14"))))
     expect(h.asserted).toHaveLength(1)
+    const denied = h.logs.find((log) => log.message[0] === "doom loop permission not granted")
+    expect(denied?.level).toBe("Warn")
+    expect(String((denied?.message[1] as Record<string, unknown>).cause)).toContain("Permission denied: doom_loop")
     await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_15"))))
     expect(h.asserted).toHaveLength(1)
+    const sticky = h.logs.find((log) => log.message[0] === "sticky doom loop circuit blocked the call")
+    expect(sticky?.level).toBe("Warn")
+    expect(sticky?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit" })
     expect(h.interrupts()).toBe(2)
   })
 
@@ -280,5 +312,86 @@ describe("doom loop plugin (standalone)", () => {
     const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", { pattern: "TODO" }, "df_1"))))
     expect(Exit.isSuccess(exit)).toBe(true)
     expect(h.asserted).toHaveLength(0)
+  })
+
+  describe("intervention logging", () => {
+    const fieldsOf = (h: Harness, message: string) =>
+      h.logs.filter((log) => log.message[0] === message).map((log) => log.message[1] as Record<string, unknown>)
+    const levelOf = (h: Harness, message: string) =>
+      h.logs.find((log) => log.message[0] === message)?.level
+    const guardAsk = async (h: Harness, tool: string, input: unknown, messageID: string) => {
+      for (let i = 0; i < 2; i++) {
+        await Effect.runPromise(Effect.exit(h.before(beforeEvent(tool, input, messageID))))
+      }
+      return Effect.runPromise(Effect.exit(h.before(beforeEvent(tool, input, messageID))))
+    }
+
+    it("logs structured trigger fields and never the tool input", async () => {
+      const h = await run()
+      const input = { command: "deploy --token super-secret-value" }
+      const sig = DoomLoopDetector.signature("shell", input)
+      const exit = await guardAsk(h, "shell", input, "log_trigger")
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(fieldsOf(h, "doom loop permission requested")).toEqual([
+        {
+          sessionID,
+          tool: "shell",
+          signal: "guard",
+          sigHash: sig,
+          resource: `shell:${sig}:repeat`,
+        },
+      ])
+      expect(levelOf(h, "doom loop permission requested")).toBe("Info")
+      // Pass calls and soft warnings are not logged; no command text is either.
+      expect(h.logs).toHaveLength(2)
+      expect(JSON.stringify(h.logs)).not.toContain("super-secret-value")
+      expect(JSON.stringify(h.logs)).not.toContain("deploy --token")
+    })
+
+    it("logs an allowed permission result without claiming once or always", async () => {
+      const h = await run()
+      const input = { pattern: "TODO" }
+      const exit = await guardAsk(h, "grep", input, "log_allowed")
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(levelOf(h, "doom loop permission allowed")).toBe("Info")
+      expect(fieldsOf(h, "doom loop permission allowed")).toEqual([
+        {
+          sessionID,
+          tool: "grep",
+          signal: "guard",
+          sigHash: DoomLoopDetector.signature("grep", input),
+          resource: `grep:${DoomLoopDetector.signature("grep", input)}:repeat`,
+        },
+      ])
+    })
+
+    it("logs a typed rejection as WARN and preserves the hook failure", async () => {
+      const h = await run()
+      h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: doom_loop" })))
+      const input = { command: "git status" }
+      const exit = await guardAsk(h, "shell", input, "log_denied")
+      expect(Exit.isFailure(exit)).toBe(true)
+      const error = Option.getOrUndefined(Exit.findErrorOption(exit))
+      expect(error).toBeInstanceOf(Tool.Error)
+      expect(error instanceof Tool.Error ? error.metadata : undefined).toEqual({ doom_loop: "blocked" })
+      expect(levelOf(h, "doom loop permission not granted")).toBe("Warn")
+      expect(String(fieldsOf(h, "doom loop permission not granted")[0]?.cause)).toContain(
+        "Permission denied: doom_loop",
+      )
+    })
+
+    it("logs a plain rejection defect as WARN without converting it to a typed error", async () => {
+      const h = await run()
+      h.setOutcome(() => Effect.die(new Error("permission transport exploded")))
+      const input = { command: "git status" }
+      const exit = await guardAsk(h, "shell", input, "log_defect")
+      // The defect is observed, not swallowed or replaced by a Tool.Error.
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Option.isNone(Exit.findErrorOption(exit))).toBe(true)
+      expect(levelOf(h, "doom loop permission not granted")).toBe("Warn")
+      expect(String(fieldsOf(h, "doom loop permission not granted")[0]?.cause)).toContain(
+        "permission transport exploded",
+      )
+    })
   })
 })
