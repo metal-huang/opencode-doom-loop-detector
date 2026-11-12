@@ -752,6 +752,32 @@ describe("doom loop detector", () => {
       expect(new Set(markers).size).toBe(4)
     })
 
+    it("distinguishes same-length URIs that differ only in the middle", () => {
+      const uri = (mid: string) => "data:image/png;base64," + "A".repeat(1000) + mid.repeat(1000) + "B".repeat(1000)
+      const marker = (mid: string) =>
+        DoomLoopDetector.outputText([{ type: "file", uri: uri(mid), mime: "image/png", name: "x.png" }])
+      expect(marker("m")).not.toBe(marker("n"))
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      for (let i = 1; i <= 3; i++) {
+        DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: marker("m") })
+      }
+      expect(state.signatures.get(sig)?.streak).toBe(3)
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: marker("n") })
+      // A middle-only change is a different file; the streak must not continue past 3.
+      expect(state.signatures.get(sig)?.streak).toBe(1)
+    })
+
+    it("ignores non-string mime or name instead of throwing", () => {
+      const raw = (uri: string, mime: unknown, name: unknown) =>
+        [{ type: "file", uri, mime, name }] as unknown as Parameters<typeof DoomLoopDetector.outputText>[0]
+      const a = DoomLoopDetector.outputText(raw("file://a", 123, null))
+      const b = DoomLoopDetector.outputText(raw("file://b", undefined, {}))
+      expect(a.startsWith("[file:")).toBe(true)
+      expect(b.startsWith("[file:")).toBe(true)
+      expect(a).not.toBe(b)
+    })
+
     it("bounds the file identity for multi-megabyte data URIs", () => {
       const huge = (tail: string) => "data:image/png;base64," + "A".repeat(64 * 1024) + tail
       const marker = (uri: string) =>

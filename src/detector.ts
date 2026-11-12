@@ -91,24 +91,36 @@ const stringify = (value: unknown): string => {
   }
 }
 
-// File URIs can be multi-megabyte data URIs. Hash a bounded head+tail sample plus the length so a
-// result's cost stays proportional to its output, not its attachment. Differences confined to the
-// unsampled middle of a huge URI collapse — a miss-direction loss for A, never a false block.
-const FILE_SAMPLE = 256
+// File URIs can be multi-megabyte data URIs. File identity uses a BigInt-free 32-bit FNV variant
+// over the full string: O(n) time, O(1) extra memory, and no head/tail sampling — sampling would
+// collide for same-length URIs that differ only in the middle and produce a false A block. Two
+// lanes with different seeds/primes form a 64-bit identity; as with any hash, collisions remain
+// theoretically possible.
+const FNV32_PRIME = 0x01000193
+const FNV32_ALT_PRIME = 0x85ebca6b
 
-function fileMarker(uri: string, mime: string | undefined, name: string | undefined): string {
-  const sample = (value: string) =>
-    value.length <= FILE_SAMPLE * 2
-      ? value
-      : `${value.slice(0, FILE_SAMPLE)}…${value.slice(-FILE_SAMPLE)}`
-  const hash = fnv64(
-    canonical({
-      length: uri.length,
-      uri: sample(uri),
-      mime: mime === undefined ? null : sample(mime),
-      name: name === undefined ? null : sample(name),
-    }),
-  )
+function hashField(hash: number, text: string, prime: number): number {
+  let next = hash ^ text.length
+  next = Math.imul(next, prime)
+  for (let index = 0; index < text.length; index++) {
+    next ^= text.charCodeAt(index)
+    next = Math.imul(next, prime)
+  }
+  return next
+}
+
+function fileHash(uri: string, mime: string | undefined, name: string | undefined): string {
+  const lane = (seed: number, prime: number) => {
+    let hash = hashField(seed, uri, prime)
+    hash = hashField(hash, mime ?? "", prime)
+    hash = hashField(hash, name ?? "", prime)
+    return (hash >>> 0).toString(16).padStart(8, "0")
+  }
+  return lane(0x811c9dc5, FNV32_PRIME) + lane(0x9e3779b9, FNV32_ALT_PRIME)
+}
+
+function fileMarker(uri: string, mime: unknown, name: unknown): string {
+  const hash = fileHash(uri, typeof mime === "string" ? mime : undefined, typeof name === "string" ? name : undefined)
   // Grouped with underscores so normalizeVolatile's /[0-9a-f]{8,}/ rule cannot collapse every
   // marker to "<id>"; underscore is a word character, so the numeric rule leaves groups intact.
   return `[file:${hash.replace(/(.{4})(?=.)/g, "$1_")}]`
@@ -165,10 +177,10 @@ export const copy = {
   unobserved: `This call's progress cannot be observed from the session output (for example a background shell). If you are running it in a loop: write progress to a file and report from it, report the current status directly to the user, or stop and summarize.`,
 } as const
 
-// Resource/save strings are `${tool}:${sigHash}` with a per-signal suffix so an "always" answer on
-// one prompt never silently exempts another signal's prompt for the same signature. A keeps the
-// unsuffixed value so approvals saved before signal isolation still apply; every other signal,
-// including the circuit breaker, appends its own suffix.
+// Resource/save strings are `${tool}:${sigHash}` with a per-signal suffix so a new "always" answer
+// on one prompt does not exempt another signal's prompt for the same signature. A keeps the
+// unsuffixed value so approvals saved before signal isolation still apply (and now only cover A);
+// every other signal, including the circuit breaker, appends its own suffix.
 export const resourceSuffix = {
   guard: ":repeat",
   unobserved: ":unobserved",
