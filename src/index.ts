@@ -35,6 +35,23 @@ interface Entry {
 
 const circuitKey = (sessionID: Session.ID) => `circuit:${sessionID}`
 
+const tagOf = (value: unknown): string | undefined =>
+  typeof value === "object" && value !== null && "_tag" in value
+    ? typeof (value as { _tag: unknown })._tag === "string"
+      ? (value as { _tag: string })._tag
+      : undefined
+    : undefined
+
+// Typed permission failures carry free text (CorrectedError.feedback, host reasons), so log only
+// a tag. Plain defects have no typed error and may include the cause for diagnosis.
+const typedErrorTag = (error: unknown): string => {
+  const inner = error instanceof Tool.Error ? tagOf(error.error) : undefined
+  return inner ?? tagOf(error) ?? (error instanceof Error ? "Error" : typeof error)
+}
+
+const failureLogFields = (error: unknown, cause: Cause.Cause<unknown>) =>
+  error === undefined ? { cause: Cause.pretty(cause) } : { error: typedErrorTag(error) }
+
 // Factory-injected cap: tests construct a plugin with a small cap instead of mutating shared state.
 export function makePlugin(options?: { maxTrackedSessions?: number }) {
   const cap = options?.maxTrackedSessions ?? DEFAULT_MAX_TRACKED_SESSIONS
@@ -133,7 +150,7 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
           }
           // The breaker goes through doom_loop like every other signal: allow resets B and lets
           // the run continue; a denial makes the stop sticky and explains why it happened.
-          yield* Effect.logInfo("doom loop permission requested", fields)
+          yield* Effect.logInfo("doom loop permission check", fields)
           const outcome = yield* Effect.exit(
             ctx.permission.assert({
               sessionID: event.sessionID,
@@ -149,22 +166,22 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
             current.state.bStreak = 0
             return
           }
-          // A defect carries no typed error either, so log the full cause rather than only the
-          // last typed error. Logging observes the outcome and must not change downstream handling.
-          yield* Effect.logWarning("doom loop permission not granted", {
-            ...fields,
-            cause: Cause.pretty(outcome.cause),
-          })
           const error = Option.getOrUndefined(Exit.findErrorOption(outcome))
+          // An interruption is not a denial. Typed failures log only an error tag because their
+          // free text may contain user feedback; a plain defect may include the cause.
+          if (Cause.hasInterrupts(outcome.cause)) {
+            yield* Effect.logDebug("doom loop permission interrupted", fields)
+          } else {
+            yield* Effect.logWarning("doom loop permission not granted", {
+              ...fields,
+              ...failureLogFields(error, outcome.cause),
+            })
+          }
           // A rule-based denial makes the stop sticky; a CorrectedError carries model feedback and
           // returns as a plain Tool.Error so the model can act on it (no sticky stop, no interrupt).
           // Only a CorrectedError returns as plain feedback for the model (no sticky stop).
           // The public API errors are Tool.Error, so identify a correction by its tag (both a bare
           // error and the host-wrapped `error` field), rather than by class identity.
-          const tagOf = (value: unknown): string | undefined =>
-            typeof value === "object" && value !== null && "_tag" in value
-              ? (value as { _tag: string })._tag
-              : undefined
           const corrected =
             tagOf(error) === "Permission.CorrectedError" ||
             (error instanceof Tool.Error && tagOf(error.error) === "Permission.CorrectedError")
@@ -186,7 +203,7 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
           sigHash,
           resource,
         }
-        yield* Effect.logInfo("doom loop permission requested", fields)
+        yield* Effect.logInfo("doom loop permission check", fields)
         // host.ts maps BlockedError/CorrectedError to Tool.Error and keeps a plain rejection a
         // defect; stacking our copy on the mapped message preserves the "why blocked + what next"
         // guidance for both typed outcomes. Deliberately no inner `error`: toSessionError unwraps
@@ -203,22 +220,24 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
             source: { type: "tool", messageID: event.messageID, id: event.id },
           })
           .pipe(
+            // Observe the host Exit before mapping so typed failures keep their original tag and
+            // a plain rejection defect is logged too. onExit passes the Exit through unchanged; it
+            // cannot swallow or rewrite the result.
+            Effect.onExit((exit) => {
+              if (Exit.isSuccess(exit)) return Effect.logInfo("doom loop permission allowed", fields)
+              if (Cause.hasInterrupts(exit.cause))
+                return Effect.logDebug("doom loop permission interrupted", fields)
+              return Effect.logWarning("doom loop permission not granted", {
+                ...fields,
+                ...failureLogFields(Option.getOrUndefined(Exit.findErrorOption(exit)), exit.cause),
+              })
+            }),
             Effect.mapError(
               (error) =>
                 new Tool.Error({
                   message: `${verdict.message}\n\n${error.message}`,
                   metadata: DoomLoopDetector.blockedMetadata,
                 }),
-            ),
-            // Observe the final Exit so a plain rejection defect is logged too. onExit passes the
-            // original success/failure through; logging cannot swallow or rewrite it.
-            Effect.onExit((exit) =>
-              Exit.isSuccess(exit)
-                ? Effect.logInfo("doom loop permission allowed", fields)
-                : Effect.logWarning("doom loop permission not granted", {
-                    ...fields,
-                    cause: Cause.pretty(exit.cause),
-                  }),
             ),
           )
       }),

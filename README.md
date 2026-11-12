@@ -39,11 +39,11 @@ No configuration is required. The default thresholds are the ones above.
 - State is kept in memory with bounded maps (LRU caps) and a bounded line store, and is rebuilt from durable session history after a restart.
 - Cost is about 0.1 ms per tool call on a real 199-call incident corpus, with no I/O and no runtime dependencies beyond the opencode plugin/schema packages and Effect.
 - A denial of the circuit-breaker prompt makes the stop sticky (until the user speaks); a rejection with feedback (`Permission.CorrectedError`) returns the feedback to the model instead of stopping.
-- Interventions are logged through the host's Effect logger with lowercase messages and structured fields (`sessionID`, `tool`, `signal`, `sigHash`, `resource`): permission requests and allowed results at info level; denials, plain defects, and sticky circuit blocks at warn level. Tool input, commands, file content, URIs, and tool output are not included as log fields. The permission API cannot distinguish once from always, so result logs only state that the request was allowed. State-restore failures keep their existing warning.
+- Interventions are logged through the host's Effect logger with lowercase messages and structured fields (`sessionID`, `tool`, `signal`, `sigHash`, `resource`): permission checks and allowed results at info level; interruptions at debug level; denials, typed failures, plain defects, and sticky circuit blocks at warn level. Typed failures log only the error tag; plain defects may include the cause. CorrectedError feedback and host reason text are not logged, and tool input, commands, file content, URIs, and tool output are not included as fields. The permission API cannot distinguish once from always, so result logs only state that the request was allowed. State-restore failures keep their existing warning.
 
 ## Verification
 
-- This package: 62 tests pass (46 detector + 15 integration + 1 load smoke test), `tsc --noEmit` clean.
+- This package: 65 tests pass (46 detector + 18 integration + 1 load smoke test), `tsc --noEmit` clean.
 - Upstream PR: 67 tests pass, typecheck clean; the review bot confirmed all four threads it raised are fixed.
 - Upstream PR: https://github.com/anomalyco/opencode/pull/61328
 - Incident analysis and call-by-call replays: https://metal-huang.github.io/opencode/doom-loop-report/

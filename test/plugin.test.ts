@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { Effect, Exit, Logger, Option, Queue, Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Logger, Option, Queue, References, Scope, Stream } from "effect"
 import { makePlugin } from "../src/index.js"
 import { DoomLoopDetector } from "../src/detector.js"
 import { Tool } from "@opencode/schema/tool"
@@ -35,7 +35,10 @@ function makeLogCapture() {
     logs.push({ level: logLevel, message: Array.isArray(message) ? message : [message] })
   })
   const observe = <A, E>(effect: Effect.Effect<A, E>) =>
-    Effect.provide(Effect.withLogger(effect, logger), Logger.layer([]))
+    Effect.provide(
+      Effect.provideService(Effect.withLogger(effect, logger), References.MinimumLogLevel, "Debug"),
+      Logger.layer([]),
+    )
   return { logs, observe }
 }
 
@@ -187,9 +190,9 @@ describe("doom loop plugin (standalone)", () => {
     // The breaker owns its saved resource: allowing B must not exempt the same signature's circuit.
     const sig = DoomLoopDetector.signature("shell", input)
     expect(h.asserted[0]?.resources).toEqual([`shell:${sig}:circuit`])
-    const requested = h.logs.find((log) => log.message[0] === "doom loop permission requested")
-    expect(requested?.level).toBe("Info")
-    expect(requested?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit" })
+    const check = h.logs.find((log) => log.message[0] === "doom loop permission check")
+    expect(check?.level).toBe("Info")
+    expect(check?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit" })
     const allowed = h.logs.find((log) => log.message[0] === "doom loop permission allowed")
     expect(allowed?.level).toBe("Info")
     expect(allowed?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit", resource: `shell:${sig}:circuit` })
@@ -203,17 +206,27 @@ describe("doom loop plugin (standalone)", () => {
     for (let i = 1; i <= 13; i++) {
       await emit(h, "shell", input, `dn_${i}`, text(out(i)))
     }
-    h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: doom_loop" })))
+    h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: circuit-secret-value" })))
     await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_14"))))
     expect(h.asserted).toHaveLength(1)
     const denied = h.logs.find((log) => log.message[0] === "doom loop permission not granted")
     expect(denied?.level).toBe("Warn")
-    expect(String((denied?.message[1] as Record<string, unknown>).cause)).toContain("Permission denied: doom_loop")
+    expect(denied?.message[1]).toMatchObject({ signal: "circuit", error: "Tool.Error" })
+    expect((denied?.message[1] as Record<string, unknown>).cause).toBeUndefined()
     await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "dn_15"))))
     expect(h.asserted).toHaveLength(1)
+    const sig = DoomLoopDetector.signature("shell", input)
     const sticky = h.logs.find((log) => log.message[0] === "sticky doom loop circuit blocked the call")
     expect(sticky?.level).toBe("Warn")
-    expect(sticky?.message[1]).toMatchObject({ sessionID, tool: "shell", signal: "circuit" })
+    expect(sticky?.message[1]).toMatchObject({
+      sessionID,
+      tool: "shell",
+      signal: "circuit",
+      sigHash: sig,
+      resource: `shell:${sig}:circuit`,
+    })
+    // Typed failure text stays out of logs even on the circuit path.
+    expect(JSON.stringify(h.logs)).not.toContain("circuit-secret-value")
     expect(h.interrupts()).toBe(2)
   })
 
@@ -224,15 +237,22 @@ describe("doom loop plugin (standalone)", () => {
     for (let i = 1; i <= 13; i++) {
       await emit(h, "shell", input, `ce_${i}`, text(out(i)))
     }
+    const feedback = "Use staging instead (corrected-secret-value)"
     h.setOutcome(() =>
       Effect.fail(
         new Tool.Error({
-          message: "Use staging instead",
-          error: { _tag: "Permission.CorrectedError", feedback: "Use staging instead" } as never,
+          message: feedback,
+          error: { _tag: "Permission.CorrectedError", feedback } as never,
         }),
       ),
     )
     await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "ce_14"))))
+    const denied = h.logs.find((log) => log.message[0] === "doom loop permission not granted")
+    expect(denied?.level).toBe("Warn")
+    expect(denied?.message[1]).toMatchObject({ signal: "circuit", error: "Permission.CorrectedError" })
+    expect((denied?.message[1] as Record<string, unknown>).cause).toBeUndefined()
+    expect(h.logs.some((log) => log.message[0] === "sticky doom loop circuit blocked the call")).toBe(false)
+    expect(JSON.stringify(h.logs)).not.toContain("corrected-secret-value")
     expect(h.interrupts()).toBe(0)
   })
 
@@ -332,7 +352,7 @@ describe("doom loop plugin (standalone)", () => {
       const sig = DoomLoopDetector.signature("shell", input)
       const exit = await guardAsk(h, "shell", input, "log_trigger")
       expect(Exit.isSuccess(exit)).toBe(true)
-      expect(fieldsOf(h, "doom loop permission requested")).toEqual([
+      expect(fieldsOf(h, "doom loop permission check")).toEqual([
         {
           sessionID,
           tool: "shell",
@@ -341,7 +361,7 @@ describe("doom loop plugin (standalone)", () => {
           resource: `shell:${sig}:repeat`,
         },
       ])
-      expect(levelOf(h, "doom loop permission requested")).toBe("Info")
+      expect(levelOf(h, "doom loop permission check")).toBe("Info")
       // Pass calls and soft warnings are not logged; no command text is either.
       expect(h.logs).toHaveLength(2)
       expect(JSON.stringify(h.logs)).not.toContain("super-secret-value")
@@ -365,9 +385,9 @@ describe("doom loop plugin (standalone)", () => {
       ])
     })
 
-    it("logs a typed rejection as WARN and preserves the hook failure", async () => {
+    it("logs a typed rejection as WARN without its free text and preserves the hook failure", async () => {
       const h = await run()
-      h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: doom_loop" })))
+      h.setOutcome(() => Effect.fail(new Tool.Error({ message: "Permission denied: typed-secret-value" })))
       const input = { command: "git status" }
       const exit = await guardAsk(h, "shell", input, "log_denied")
       expect(Exit.isFailure(exit)).toBe(true)
@@ -375,9 +395,25 @@ describe("doom loop plugin (standalone)", () => {
       expect(error).toBeInstanceOf(Tool.Error)
       expect(error instanceof Tool.Error ? error.metadata : undefined).toEqual({ doom_loop: "blocked" })
       expect(levelOf(h, "doom loop permission not granted")).toBe("Warn")
-      expect(String(fieldsOf(h, "doom loop permission not granted")[0]?.cause)).toContain(
-        "Permission denied: doom_loop",
-      )
+      const fields = fieldsOf(h, "doom loop permission not granted")[0]
+      expect(fields?.error).toBe("Tool.Error")
+      expect(fields?.cause).toBeUndefined()
+      expect(JSON.stringify(h.logs)).not.toContain("typed-secret-value")
+    })
+
+    it("logs an interruption at debug level and preserves the interrupted Exit", async () => {
+      const h = await run()
+      h.setOutcome(() => Effect.interrupt)
+      const input = { command: "git status" }
+      const exit = await guardAsk(h, "shell", input, "log_interrupt")
+      expect(Exit.isSuccess(exit)).toBe(false)
+      const cause = Exit.isFailure(exit) ? exit.cause : undefined
+      expect(cause !== undefined && Cause.hasInterrupts(cause)).toBe(true)
+      expect(levelOf(h, "doom loop permission interrupted")).toBe("Debug")
+      const fields = fieldsOf(h, "doom loop permission interrupted")[0]
+      expect(fields).toMatchObject({ sessionID, tool: "shell", signal: "guard" })
+      expect(fields?.cause).toBeUndefined()
+      expect(levelOf(h, "doom loop permission not granted")).toBeUndefined()
     })
 
     it("logs a plain rejection defect as WARN without converting it to a typed error", async () => {
@@ -392,6 +428,38 @@ describe("doom loop plugin (standalone)", () => {
       expect(String(fieldsOf(h, "doom loop permission not granted")[0]?.cause)).toContain(
         "permission transport exploded",
       )
+    })
+
+    it("logs a circuit defect as WARN and keeps the existing sticky behavior", async () => {
+      const h = await run()
+      const input = { command: "probe" }
+      const out = (i: number) => `probe ${i}\nstatic line one\nstatic line two`
+      for (let i = 1; i <= 13; i++) await emit(h, "shell", input, `cdf_${i}`, text(out(i)))
+      h.setOutcome(() => Effect.die(new Error("circuit transport exploded")))
+      await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "cdf_14"))))
+      expect(h.interrupts()).toBe(1)
+      const warned = fieldsOf(h, "doom loop permission not granted")[0]
+      expect(levelOf(h, "doom loop permission not granted")).toBe("Warn")
+      expect(warned?.error).toBeUndefined()
+      expect(String(warned?.cause)).toContain("circuit transport exploded")
+      // The defect still follows the existing sticky path; the next call does not re-ask.
+      await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "cdf_15"))))
+      expect(h.asserted).toHaveLength(1)
+      expect(levelOf(h, "sticky doom loop circuit blocked the call")).toBe("Warn")
+    })
+
+    it("logs a circuit interruption at debug level without changing the existing stop", async () => {
+      const h = await run()
+      const input = { command: "probe" }
+      const out = (i: number) => `probe ${i}\nstatic line one\nstatic line two`
+      for (let i = 1; i <= 13; i++) await emit(h, "shell", input, `cint_${i}`, text(out(i)))
+      h.setOutcome(() => Effect.interrupt)
+      const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "cint_14"))))
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(levelOf(h, "doom loop permission interrupted")).toBe("Debug")
+      expect(levelOf(h, "doom loop permission not granted")).toBeUndefined()
+      // Existing circuit handling still treats an interrupted ask as a stop and interrupts.
+      expect(h.interrupts()).toBe(1)
     })
   })
 })
