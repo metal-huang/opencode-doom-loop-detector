@@ -91,11 +91,12 @@ const stringify = (value: unknown): string => {
   }
 }
 
-// File URIs can be multi-megabyte data URIs. File identity uses a BigInt-free 32-bit FNV variant
-// over the full string: O(n) time, O(1) extra memory, and no head/tail sampling — sampling would
-// collide for same-length URIs that differ only in the middle and produce a false A block. Two
-// lanes with different seeds/primes form a 64-bit identity; as with any hash, collisions remain
-// theoretically possible.
+// File URIs can be multi-megabyte data URIs. File identity is uri + mime only: the returned name is
+// deliberately ignored so a renamed attachment still counts toward the same A streak. The hash is
+// a BigInt-free 32-bit FNV variant over the full fields: O(n) time, O(1) extra memory, and no
+// head/tail sampling — sampling would collide for same-length URIs that differ only in the middle
+// and produce a false A block. Two lanes with different seeds/primes form a 64-bit identity; as
+// with any hash, collisions remain theoretically possible.
 const FNV32_PRIME = 0x01000193
 const FNV32_ALT_PRIME = 0x85ebca6b
 
@@ -109,18 +110,17 @@ function hashField(hash: number, text: string, prime: number): number {
   return next
 }
 
-function fileHash(uri: string, mime: string | undefined, name: string | undefined): string {
+function fileHash(uri: string, mime: string | undefined): string {
   const lane = (seed: number, prime: number) => {
     let hash = hashField(seed, uri, prime)
     hash = hashField(hash, mime ?? "", prime)
-    hash = hashField(hash, name ?? "", prime)
     return (hash >>> 0).toString(16).padStart(8, "0")
   }
   return lane(0x811c9dc5, FNV32_PRIME) + lane(0x9e3779b9, FNV32_ALT_PRIME)
 }
 
-function fileMarker(uri: string, mime: unknown, name: unknown): string {
-  const hash = fileHash(uri, typeof mime === "string" ? mime : undefined, typeof name === "string" ? name : undefined)
+function fileMarker(uri: string, mime: unknown): string {
+  const hash = fileHash(uri, typeof mime === "string" ? mime : undefined)
   // Grouped with underscores so normalizeVolatile's /[0-9a-f]{8,}/ rule cannot collapse every
   // marker to "<id>"; underscore is a word character, so the numeric rule leaves groups intact.
   return `[file:${hash.replace(/(.{4})(?=.)/g, "$1_")}]`
@@ -129,7 +129,7 @@ function fileMarker(uri: string, mime: unknown, name: unknown): string {
 // Mirrors the runtime content normalization: a tool result carries either string content, content
 // parts, or (for output-only tools) falls back to the stringified machine output. Hashing must use
 // this normalized view so output-only tools do not all hash as one constant empty string.
-// File parts carry no text, so their canonical descriptor is hashed into a bounded marker line.
+// File parts carry no text, so their uri+mime identity is hashed into a bounded marker line.
 // Without it, every file-only result normalizes to "" and different attachments look identical;
 // the hash also keeps a data URI out of the line store. Pure text results are unchanged.
 export function outputText(
@@ -150,7 +150,7 @@ export function outputText(
     return content
       .flatMap((item) => {
         if (item.type === "text" && typeof item.text === "string") return [item.text]
-        if (item.type === "file" && typeof item.uri === "string") return [fileMarker(item.uri, item.mime, item.name)]
+        if (item.type === "file" && typeof item.uri === "string") return [fileMarker(item.uri, item.mime)]
         return []
       })
       .join("\n")

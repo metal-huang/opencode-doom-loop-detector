@@ -6,7 +6,7 @@ opencode v2 accepts `doom_loop` as a permission action, but no code produces it.
 
 ## Detection principle
 
-Count **per signature** (tool + canonical input), not by adjacency. Each signature stores only its last output hash and its current streak. A repeat counts only when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. File results are normalized to a bounded content hash of their uri (plus mime and name), computed over the full string with a BigInt-free pass, so same-length middle-only differences remain distinct and the raw URI never enters the line store. No time window, no consecutive requirement: rotations of any period are caught, because each signature's streak is independent of what other signatures do in between.
+Count **per signature** (tool + canonical input), not by adjacency. Each signature stores only its last output hash and its current streak. A repeat counts only when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. File results are normalized to a bounded content hash of their uri and mime (the returned name is ignored), computed over the full string with a BigInt-free pass, so same-length middle-only differences remain distinct and the raw URI never enters the line store. Attachment markers are ordinary output lines for B: the same attachment contributes no novelty and a changed attachment does, with the text thresholds unchanged. No time window, no consecutive requirement: rotations of any period are caught, because each signature's streak is independent of what other signatures do in between.
 
 Four detectors:
 

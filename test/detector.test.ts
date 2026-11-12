@@ -688,9 +688,30 @@ describe("doom loop detector", () => {
       expect(challenges).toEqual([])
       expect(warnings).toEqual([])
       expect(state.signatures.get(sig)?.streak).toBe(1)
-      // uri, mime and name all participate in the file identity.
-      expect(file("file://same", "a.png")).not.toBe(file("file://same", "b.png"))
+      // uri and mime participate; name is deliberately ignored so a renamed attachment keeps A.
+      expect(file("file://same", "a.png")).toBe(file("file://same", "b.png"))
       expect(file("file://same", "a.png", "image/png")).not.toBe(file("file://same", "a.png", "image/jpeg"))
+    })
+
+    it("keeps accumulating A when only the returned file name changes", () => {
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      const challenges: number[] = []
+      const warnings: number[] = []
+      for (let i = 1; i <= 8; i++) {
+        const before = DoomLoopDetector.beforeCall(state, { tool: "read", sigHash: sig, messageID: `rename_${i}` })
+        if (before.kind === "assert") challenges.push(i)
+        const warning = DoomLoopDetector.recordCompleted(state, {
+          tool: "read",
+          sigHash: sig,
+          text: file("file://same", `out-${i}.png`),
+        })
+        if (warning !== undefined) warnings.push(i)
+      }
+      // A renamed attachment is the same file identity: warn and block at the usual thresholds.
+      expect(warnings).toEqual([3])
+      expect(challenges).toEqual([7, 8])
+      expect(state.signatures.get(sig)?.streak).toBe(8)
     })
 
     it("keeps accumulating A when the same file is returned repeatedly", () => {
@@ -750,6 +771,23 @@ describe("doom loop detector", () => {
       const markers = [...state.lines.set].filter((line) => line.startsWith("[file:"))
       expect(markers).toHaveLength(4)
       expect(new Set(markers).size).toBe(4)
+    })
+
+    it("counts a renamed attachment as the same file in B's novelty", () => {
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      const out = (name: string) =>
+        DoomLoopDetector.outputText([
+          { type: "file", uri: "file://a", mime: "image/png", name: `${name}-a.png` },
+          { type: "file", uri: "file://b", mime: "image/png", name: `${name}-b.png` },
+          { type: "text", text: "rendered" },
+        ])
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out("first") })
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out("second") })
+      // Name changes add no marker lines, so the second call contributes nothing new.
+      expect(state.bStreak).toBe(1)
+      const markers = [...state.lines.set].filter((line) => line.startsWith("[file:"))
+      expect(markers).toHaveLength(2)
     })
 
     it("distinguishes same-length URIs that differ only in the middle", () => {
