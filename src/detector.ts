@@ -91,6 +91,29 @@ const stringify = (value: unknown): string => {
   }
 }
 
+// File URIs can be multi-megabyte data URIs. Hash a bounded head+tail sample plus the length so a
+// result's cost stays proportional to its output, not its attachment. Differences confined to the
+// unsampled middle of a huge URI collapse — a miss-direction loss for A, never a false block.
+const FILE_SAMPLE = 256
+
+function fileMarker(uri: string, mime: string | undefined, name: string | undefined): string {
+  const sample = (value: string) =>
+    value.length <= FILE_SAMPLE * 2
+      ? value
+      : `${value.slice(0, FILE_SAMPLE)}…${value.slice(-FILE_SAMPLE)}`
+  const hash = fnv64(
+    canonical({
+      length: uri.length,
+      uri: sample(uri),
+      mime: mime === undefined ? null : sample(mime),
+      name: name === undefined ? null : sample(name),
+    }),
+  )
+  // Grouped with underscores so normalizeVolatile's /[0-9a-f]{8,}/ rule cannot collapse every
+  // marker to "<id>"; underscore is a word character, so the numeric rule leaves groups intact.
+  return `[file:${hash.replace(/(.{4})(?=.)/g, "$1_")}]`
+}
+
 // Mirrors the runtime content normalization: a tool result carries either string content, content
 // parts, or (for output-only tools) falls back to the stringified machine output. Hashing must use
 // this normalized view so output-only tools do not all hash as one constant empty string.
@@ -115,8 +138,7 @@ export function outputText(
     return content
       .flatMap((item) => {
         if (item.type === "text" && typeof item.text === "string") return [item.text]
-        if (item.type === "file" && typeof item.uri === "string")
-          return [`[file:${fnv64(canonical({ uri: item.uri, mime: item.mime, name: item.name ?? null }))}]`]
+        if (item.type === "file" && typeof item.uri === "string") return [fileMarker(item.uri, item.mime, item.name)]
         return []
       })
       .join("\n")
@@ -145,8 +167,16 @@ export const copy = {
 
 // Resource/save strings are `${tool}:${sigHash}` with a per-signal suffix so an "always" answer on
 // one prompt never silently exempts another signal's prompt for the same signature. A keeps the
-// unsuffixed value so approvals saved before signal isolation still apply; B and C are suffixed.
-export const resourceSuffix = { guard: ":repeat", unobserved: ":unobserved", a: "", b: ":b", c: ":c" } as const
+// unsuffixed value so approvals saved before signal isolation still apply; every other signal,
+// including the circuit breaker, appends its own suffix.
+export const resourceSuffix = {
+  guard: ":repeat",
+  unobserved: ":unobserved",
+  a: "",
+  b: ":b",
+  c: ":c",
+  circuit: ":circuit",
+} as const
 
 // Host-specific strings that mark argument-validation rejections (the tool never executed).
 // Kept in one place so a host copy change is a one-line fix; an unmatched message is treated as a

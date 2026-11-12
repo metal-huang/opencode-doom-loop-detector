@@ -730,6 +730,38 @@ describe("doom loop detector", () => {
       // The unchanged text part must not mask a changed file attachment.
       expect(state.signatures.get(sig)?.streak).toBe(1)
     })
+
+    it("keeps file markers distinct in B's line store so attachment-only changes count", () => {
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      const out = (a: string, b: string) =>
+        DoomLoopDetector.outputText([
+          { type: "file", uri: a, mime: "image/png", name: "a.png" },
+          { type: "file", uri: b, mime: "image/png", name: "b.png" },
+          { type: "text", text: "rendered" },
+        ])
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out("file://a1", "file://b1") })
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out("file://a1", "file://b1") })
+      expect(state.bStreak).toBe(1)
+      // Changing both attachments yields two novel marker lines out of three (66%), so B sees
+      // progress even though every text line is unchanged.
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out("file://a2", "file://b2") })
+      expect(state.bStreak).toBe(0)
+      const markers = [...state.lines.set].filter((line) => line.startsWith("[file:"))
+      expect(markers).toHaveLength(4)
+      expect(new Set(markers).size).toBe(4)
+    })
+
+    it("bounds the file identity for multi-megabyte data URIs", () => {
+      const huge = (tail: string) => "data:image/png;base64," + "A".repeat(64 * 1024) + tail
+      const marker = (uri: string) =>
+        DoomLoopDetector.outputText([{ type: "file", uri, mime: "image/png", name: "huge.png" }])
+      // The marker length stays tiny regardless of payload size; only a bounded sample is hashed.
+      expect(marker(huge("A")).length).toBeLessThan(64)
+      expect(marker(huge("A"))).toBe(marker(huge("A")))
+      expect(marker(huge("A"))).not.toBe(marker(huge("B")))
+      expect(marker(huge("A"))).not.toBe(marker(huge("AA")))
+    })
   })
 
   describe("hashing and resource strings", () => {
@@ -748,14 +780,14 @@ describe("doom loop detector", () => {
         a: "",
         b: ":b",
         c: ":c",
+        circuit: ":circuit",
       })
       const sig = DoomLoopDetector.signature("shell", { command: "git status" })
-      const resources = ["a", "b", "c"].map(
-        (signal) => `shell:${sig}${DoomLoopDetector.resourceSuffix[signal as "a" | "b" | "c"]}`,
-      )
+      const signals = ["a", "b", "c", "circuit"] as const
+      const resources = signals.map((signal) => `shell:${sig}${DoomLoopDetector.resourceSuffix[signal]}`)
       // A deliberately stays unsuffixed: saved approvals for A predate signal isolation.
-      expect(resources).toEqual([`shell:${sig}`, `shell:${sig}:b`, `shell:${sig}:c`])
-      expect(new Set(resources).size).toBe(3)
+      expect(resources).toEqual([`shell:${sig}`, `shell:${sig}:b`, `shell:${sig}:c`, `shell:${sig}:circuit`])
+      expect(new Set(resources).size).toBe(4)
     })
 
     it("falls back to stringified output so output-only tools still hash meaningfully", () => {

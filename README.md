@@ -13,7 +13,7 @@ Four complementary detectors:
 3. **Signal B** — line-level information novelty (warn 3/5, surgical ask at 8 only when that signature's A streak is ≥3, circuit breaker at 12). Outputs shorter than 3 lines are exempt.
 4. **Signal C** — per-signature failure-equivalence streak (warn 4, block 6). Volatile error tokens are normalized, and successes of other signatures do not reset it.
 
-Every stop goes through the existing `doom_loop` permission ask, so intentional polling always has an escape hatch. An "always allow" is saved per signal, so approving A never exempts B or C for the same call. A keeps its historical resource string, so approvals saved before this isolation still apply. A user message resets A/C as well as B and the breaker (per-turn scope), so a periodic legitimate re-check cannot accumulate into a block over days.
+Every stop goes through the existing `doom_loop` permission ask, so intentional polling always has an escape hatch. An "always allow" is saved per signal, so approving A, B, C, or the circuit breaker never exempts another signal for the same call. A keeps its historical resource string, so approvals saved before this isolation still apply. A user message resets A/C as well as B and the breaker (per-turn scope), so a periodic legitimate re-check cannot accumulate into a block over days.
 
 ## Install
 
@@ -42,7 +42,7 @@ No configuration is required. The default thresholds are the ones above.
 
 ## Verification
 
-- This package: 51 tests pass (40 detector + 10 integration + 1 load smoke test), `tsc --noEmit` clean.
+- This package: 54 tests pass (42 detector + 11 integration + 1 load smoke test), `tsc --noEmit` clean.
 - Upstream PR: 67 tests pass, typecheck clean; the review bot confirmed all four threads it raised are fixed.
 - Upstream PR: https://github.com/anomalyco/opencode/pull/61328
 - Incident analysis and call-by-call replays: https://metal-huang.github.io/opencode/doom-loop-report/

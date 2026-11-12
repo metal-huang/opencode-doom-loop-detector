@@ -1,7 +1,7 @@
 import { define } from "@opencode/plugin/effect/plugin"
 import type { Session } from "@opencode/schema/session"
 import type { SessionEvent } from "@opencode/schema/session-event"
-import { Effect, Exit, Option, Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Option, Scope, Stream } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { DoomLoopDetector } from "./detector.js"
 import { DoomLoopFold } from "./fold.js"
@@ -56,11 +56,12 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
         }).pipe(
           // A history or KV read failure must not fail the tool call: fall back to a fresh state
           // (the pre-fold behavior) rather than dropping detection entirely. Never silently —
-          // this restarts the session's A/C/circuit state, so warn with the cause.
-          Effect.catch((error) =>
+          // this restarts the session's A/C/circuit state, so warn with the cause. catchCause
+          // also covers defects thrown by the fold, which the old Promise.catch swallowed.
+          Effect.catchCause((cause) =>
             Effect.logWarning(
               "doom-loop detector: failed to restore session state; continuing with a fresh state",
-              { sessionID, error: error instanceof Error ? error.message : String(error) },
+              { sessionID, cause: Cause.pretty(cause) },
             ).pipe(Effect.as<Entry>({ state: DoomLoopDetector.state() })),
           ),
         ),
@@ -123,7 +124,7 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
           }
           // The breaker goes through doom_loop like every other signal: allow resets B and lets
           // the run continue; a denial makes the stop sticky and explains why it happened.
-          const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix.b}`
+          const resource = `${event.tool}:${sigHash}${DoomLoopDetector.resourceSuffix.circuit}`
           const outcome = yield* Effect.exit(
             ctx.permission.assert({
               sessionID: event.sessionID,

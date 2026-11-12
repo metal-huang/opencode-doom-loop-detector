@@ -164,6 +164,9 @@ describe("doom loop plugin (standalone)", () => {
     const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("shell", input, "al_14"))))
     expect(Exit.isSuccess(exit)).toBe(true)
     expect(h.asserted).toHaveLength(1)
+    // The breaker owns its saved resource: allowing B must not exempt the same signature's circuit.
+    const sig = DoomLoopDetector.signature("shell", input)
+    expect(h.asserted[0]?.resources).toEqual([`shell:${sig}:circuit`])
     expect(h.interrupts()).toBe(0)
   })
 
@@ -266,6 +269,15 @@ describe("doom loop plugin (standalone)", () => {
     // emission passes instead of asking. A failed read must not fail the tool call.
     const h = await run({ history, failStorage: true })
     const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "kf_7"))))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
+  })
+
+  it("degrades to a fresh state without throwing when the fold hits a defect", async () => {
+    // null content makes DoomLoopFold.fold throw a TypeError while iterating the message.
+    const broken = [{ type: "assistant", content: null }] as unknown as SessionMessage.Info[]
+    const h = await run({ history: broken })
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", { pattern: "TODO" }, "df_1"))))
     expect(Exit.isSuccess(exit)).toBe(true)
     expect(h.asserted).toHaveLength(0)
   })
