@@ -53,10 +53,18 @@ export function makePlugin(options?: { maxTrackedSessions?: number }) {
           DoomLoopFold.fold(entry.state, messages)
           if ((yield* ctx.storage.get(circuitKey(sessionID))) === true) entry.state.circuitBroken = true
           return entry
-        }),
-        // A history read failure must not fail the tool call: fall back to a fresh state (the
-        // pre-fold behavior) rather than dropping detection entirely.
-      ).catch((): Entry => ({ state: DoomLoopDetector.state() }))
+        }).pipe(
+          // A history or KV read failure must not fail the tool call: fall back to a fresh state
+          // (the pre-fold behavior) rather than dropping detection entirely. Never silently —
+          // this restarts the session's A/C/circuit state, so warn with the cause.
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "doom-loop detector: failed to restore session state; continuing with a fresh state",
+              { sessionID, error: error instanceof Error ? error.message : String(error) },
+            ).pipe(Effect.as<Entry>({ state: DoomLoopDetector.state() })),
+          ),
+        ),
+      )
 
     // The promise enters the map synchronously so concurrent first touches share one fold.
     const session = (sessionID: Session.ID) => {

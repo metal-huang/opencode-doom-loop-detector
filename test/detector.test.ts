@@ -669,6 +669,69 @@ describe("doom loop detector", () => {
     })
   })
 
+  describe("file content normalization", () => {
+    const file = (uri: string, name = "out.png", mime = "image/png") =>
+      DoomLoopDetector.outputText([{ type: "file", uri, mime, name }])
+
+    it("distinguishes file-only results so different files never accumulate A", () => {
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      const challenges: number[] = []
+      const warnings: number[] = []
+      for (let i = 1; i <= 7; i++) {
+        const before = DoomLoopDetector.beforeCall(state, { tool: "read", sigHash: sig, messageID: `file_${i}` })
+        if (before.kind === "assert") challenges.push(i)
+        const warning = DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: file(`file://${i}`) })
+        if (warning !== undefined) warnings.push(i)
+      }
+      // Every result is a different file, so no byte-identical streak ever forms.
+      expect(challenges).toEqual([])
+      expect(warnings).toEqual([])
+      expect(state.signatures.get(sig)?.streak).toBe(1)
+      // uri, mime and name all participate in the file identity.
+      expect(file("file://same", "a.png")).not.toBe(file("file://same", "b.png"))
+      expect(file("file://same", "a.png", "image/png")).not.toBe(file("file://same", "a.png", "image/jpeg"))
+    })
+
+    it("keeps accumulating A when the same file is returned repeatedly", () => {
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      const out = file("file://same")
+      const challenges: number[] = []
+      const warnings: number[] = []
+      for (let i = 1; i <= 8; i++) {
+        const before = DoomLoopDetector.beforeCall(state, { tool: "read", sigHash: sig, messageID: `same_${i}` })
+        if (before.kind === "assert") challenges.push(i)
+        const warning = DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: out })
+        if (warning !== undefined) warnings.push(i)
+      }
+      expect(warnings).toEqual([3])
+      // Same threshold as text output: the 7th emission after six identical accountings asks.
+      expect(challenges).toEqual([7, 8])
+    })
+
+    it("reflects file differences in mixed text+file content", () => {
+      const mixed = (uri: string) =>
+        DoomLoopDetector.outputText([
+          { type: "text", text: "rendered" },
+          { type: "file", uri, mime: "image/png", name: "out.png" },
+        ])
+      expect(mixed("file://a")).not.toBe(mixed("file://b"))
+      expect(mixed("file://a")).toContain("rendered")
+      const state = DoomLoopDetector.state()
+      const sig = DoomLoopDetector.signature("read", { filePath: "assets" })
+      for (let i = 1; i <= 3; i++) {
+        DoomLoopDetector.beforeCall(state, { tool: "read", sigHash: sig, messageID: `mix_${i}` })
+        DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: mixed("file://a") })
+      }
+      expect(state.signatures.get(sig)?.streak).toBe(3)
+      DoomLoopDetector.beforeCall(state, { tool: "read", sigHash: sig, messageID: "mix_4" })
+      DoomLoopDetector.recordCompleted(state, { tool: "read", sigHash: sig, text: mixed("file://b") })
+      // The unchanged text part must not mask a changed file attachment.
+      expect(state.signatures.get(sig)?.streak).toBe(1)
+    })
+  })
+
   describe("hashing and resource strings", () => {
     it("signatures are wildcard-safe 16-char hex of canonical JSON", () => {
       const a = DoomLoopDetector.signature("shell", { command: "ls", flag: true })
@@ -678,14 +741,21 @@ describe("doom loop detector", () => {
       expect(DoomLoopDetector.signature("shell", { command: "ls -la" })).not.toBe(a)
     })
 
-    it("isolates per-signal resource suffixes", () => {
+    it("isolates per-signal resource suffixes while keeping the existing A value", () => {
       expect(DoomLoopDetector.resourceSuffix).toEqual({
         guard: ":repeat",
         unobserved: ":unobserved",
         a: "",
-        b: "",
-        c: "",
+        b: ":b",
+        c: ":c",
       })
+      const sig = DoomLoopDetector.signature("shell", { command: "git status" })
+      const resources = ["a", "b", "c"].map(
+        (signal) => `shell:${sig}${DoomLoopDetector.resourceSuffix[signal as "a" | "b" | "c"]}`,
+      )
+      // A deliberately stays unsuffixed: saved approvals for A predate signal isolation.
+      expect(resources).toEqual([`shell:${sig}`, `shell:${sig}:b`, `shell:${sig}:c`])
+      expect(new Set(resources).size).toBe(3)
     })
 
     it("falls back to stringified output so output-only tools still hash meaningfully", () => {

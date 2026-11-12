@@ -6,7 +6,7 @@ opencode v2 accepts `doom_loop` as a permission action, but no code produces it.
 
 ## Detection principle
 
-Count **per signature** (tool + canonical input), not by adjacency. Each signature stores only its last output hash and its current streak. A repeat counts only when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. No time window, no consecutive requirement: rotations of any period are caught, because each signature's streak is independent of what other signatures do in between.
+Count **per signature** (tool + canonical input), not by adjacency. Each signature stores only its last output hash and its current streak. A repeat counts only when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. File results are normalized to a bounded hash of their uri, mime, and name, so different attachments are distinguishable and a data URI never enters the line store. No time window, no consecutive requirement: rotations of any period are caught, because each signature's streak is independent of what other signatures do in between.
 
 Four detectors:
 
@@ -17,7 +17,7 @@ Four detectors:
 
 ## Intervention
 
-Every stop goes through the existing `doom_loop` permission ask, so intentional polling has an escape hatch. A user message resets A/C as well as B and the breaker (per-turn scope), so a periodic legitimate re-check cannot accumulate into a block over days. A denial of the circuit-breaker prompt makes the stop sticky; a rejection with feedback (`Permission.CorrectedError`) returns the feedback to the model instead of stopping.
+Every stop goes through the existing `doom_loop` permission ask, so intentional polling has an escape hatch. Saved approvals are isolated per signal: approving A does not exempt B or C for the same call, while A keeps its historical resource string so earlier approvals still apply. A user message resets A/C as well as B and the breaker (per-turn scope), so a periodic legitimate re-check cannot accumulate into a block over days. A denial of the circuit-breaker prompt makes the stop sticky; a rejection with feedback (`Permission.CorrectedError`) returns the feedback to the model instead of stopping.
 
 ## Cost and bounds
 

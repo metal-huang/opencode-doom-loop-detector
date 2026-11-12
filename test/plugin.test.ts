@@ -35,7 +35,14 @@ function makeHistoryCall(id: string, tool: string, input: unknown, out: string):
   } as unknown as SessionMessage.Info
 }
 
-async function run(options?: { history?: SessionMessage.Info[]; cap?: number; storage?: Map<string, unknown>; eventStream?: Stream.Stream<SessionEvent.Info> }): Promise<Harness> {
+async function run(options?: {
+  history?: SessionMessage.Info[]
+  cap?: number
+  storage?: Map<string, unknown>
+  eventStream?: Stream.Stream<SessionEvent.Info>
+  failContext?: boolean
+  failStorage?: boolean
+}): Promise<Harness> {
   let beforeHook: BeforeHook | undefined
   let afterHook: AfterHook | undefined
   const asserted: { resources: ReadonlyArray<string> }[] = []
@@ -60,14 +67,18 @@ async function run(options?: { history?: SessionMessage.Info[]; cap?: number; st
       },
     },
     session: {
-      context: () => Effect.succeed(options?.history ?? []),
+      context: () =>
+        options?.failContext
+          ? Effect.fail(new Error("history read failed"))
+          : Effect.succeed(options?.history ?? []),
       interrupt: () => {
         interrupts++
         return Effect.void
       },
     },
     storage: {
-      get: (key: string) => Effect.succeed(storage.get(key)),
+      get: (key: string) =>
+        options?.failStorage ? Effect.fail(new Error("storage read failed")) : Effect.succeed(storage.get(key)),
       set: (key: string, value: unknown) => Effect.sync(() => void storage.set(key, value)),
       remove: (key: string) =>
         Effect.sync(() => {
@@ -237,6 +248,25 @@ describe("doom loop plugin (standalone)", () => {
     await emit(h, "grep", { pattern: "b" }, "lru_b2", text("b one"), sesB)
     const before = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "lru_a4", sesA))))
     expect(Exit.isSuccess(before)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
+  })
+
+  it("degrades to a fresh state without throwing when the history read fails", async () => {
+    const h = await run({ failContext: true })
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", { pattern: "TODO" }, "hf_1"))))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(h.asserted).toHaveLength(0)
+  })
+
+  it("degrades to a fresh state without throwing when the KV circuit read fails", async () => {
+    const input = { pattern: "TODO", path: "src" }
+    const out = "src/a.ts:1:TODO\nsrc/b.ts:2:TODO\nsrc/c.ts:3:TODO"
+    const history = Array.from({ length: 6 }, (_, i) => makeHistoryCall(`kf_${i}`, "grep", input, out))
+    // The history is readable, but losing the fold must also discard its A streak, so the 7th
+    // emission passes instead of asking. A failed read must not fail the tool call.
+    const h = await run({ history, failStorage: true })
+    const exit = await Effect.runPromise(Effect.exit(h.before(beforeEvent("grep", input, "kf_7"))))
+    expect(Exit.isSuccess(exit)).toBe(true)
     expect(h.asserted).toHaveLength(0)
   })
 })

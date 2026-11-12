@@ -94,14 +94,31 @@ const stringify = (value: unknown): string => {
 // Mirrors the runtime content normalization: a tool result carries either string content, content
 // parts, or (for output-only tools) falls back to the stringified machine output. Hashing must use
 // this normalized view so output-only tools do not all hash as one constant empty string.
+// File parts carry no text, so their canonical descriptor is hashed into a bounded marker line.
+// Without it, every file-only result normalizes to "" and different attachments look identical;
+// the hash also keeps a data URI out of the line store. Pure text results are unchanged.
 export function outputText(
-  content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }> | undefined,
+  content:
+    | string
+    | ReadonlyArray<{
+        readonly type: string
+        readonly text?: string
+        readonly uri?: string
+        readonly mime?: string
+        readonly name?: string
+      }>
+    | undefined,
   output?: unknown,
 ): string {
   if (typeof content === "string") return content
   if (content !== undefined && content.length > 0)
     return content
-      .flatMap((item) => (item.type === "text" && typeof item.text === "string" ? [item.text] : []))
+      .flatMap((item) => {
+        if (item.type === "text" && typeof item.text === "string") return [item.text]
+        if (item.type === "file" && typeof item.uri === "string")
+          return [`[file:${fnv64(canonical({ uri: item.uri, mime: item.mime, name: item.name ?? null }))}]`]
+        return []
+      })
       .join("\n")
   return stringify(output)
 }
@@ -127,8 +144,9 @@ export const copy = {
 } as const
 
 // Resource/save strings are `${tool}:${sigHash}` with a per-signal suffix so an "always" answer on
-// one prompt never silently exempts another signal's prompt for the same signature.
-export const resourceSuffix = { guard: ":repeat", unobserved: ":unobserved", a: "", b: "", c: "" } as const
+// one prompt never silently exempts another signal's prompt for the same signature. A keeps the
+// unsuffixed value so approvals saved before signal isolation still apply; B and C are suffixed.
+export const resourceSuffix = { guard: ":repeat", unobserved: ":unobserved", a: "", b: ":b", c: ":c" } as const
 
 // Host-specific strings that mark argument-validation rejections (the tool never executed).
 // Kept in one place so a host copy change is a one-line fix; an unmatched message is treated as a
