@@ -820,7 +820,8 @@ describe("doom loop detector", () => {
       const huge = (tail: string) => "data:image/png;base64," + "A".repeat(64 * 1024) + tail
       const marker = (uri: string) =>
         DoomLoopDetector.outputText([{ type: "file", uri, mime: "image/png", name: "huge.png" }])
-      // The marker length stays tiny regardless of payload size; only a bounded sample is hashed.
+      // The marker stays fixed-size regardless of payload size; the whole URI is hashed with the
+      // cheap full-string pass, not a sample.
       expect(marker(huge("A")).length).toBeLessThan(64)
       expect(marker(huge("A"))).toBe(marker(huge("A")))
       expect(marker(huge("A"))).not.toBe(marker(huge("B")))

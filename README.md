@@ -9,7 +9,7 @@ opencode v2 currently has no doom-loop detection: the `doom_loop` action is stil
 Four complementary detectors:
 
 1. **Same-message guard** (the v1 behavior, unchanged): the same call emitted 3 times inside one assistant message asks once.
-2. **Signal A** — per-signature identical-output streak (warn 3, block 6). Counting is per signature, so periodic rotations and interleaved calls never reset it. A repeat only counts when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. File results use a bounded content hash of their uri and mime (the returned name is ignored), so a changed attachment changes the file identity aside from hash collisions while a renamed file keeps the same identity.
+2. **Signal A** — per-signature identical-output streak (warn 3, block 6). Counting is per signature, so periodic rotations and interleaved calls never reset it. A repeat only counts when the output is byte-identical, so a read-edit-test cycle with real progress never builds a streak. File results use a fixed-size marker containing a hash of the full uri and mime (the returned name is ignored), so a changed attachment changes the file identity aside from hash collisions while a renamed file keeps the same identity.
 3. **Signal B** — line-level information novelty (warn 3/5, surgical ask at 8 only when that signature's A streak is ≥3, circuit breaker at 12). Outputs shorter than 3 lines are exempt. File attachment markers count as output lines: the same attachment adds nothing new, a changed attachment counts as new information.
 4. **Signal C** — per-signature failure-equivalence streak (warn 4, block 6). Volatile error tokens are normalized, and successes of other signatures do not reset it.
 
