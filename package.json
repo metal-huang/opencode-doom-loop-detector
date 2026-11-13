@@ -1,6 +1,6 @@
 {
   "name": "opencode-doom-loop-detector",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Doom-loop detection for opencode v2: catches repeated tool-call loops (consecutive, periodic rotation, failure streaks) and stops them through the existing doom_loop permission ask.",
   "type": "module",
   "license": "MIT",
